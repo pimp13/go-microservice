@@ -87,3 +87,9 @@ backup-db: ## Backup دیتابیس
 restore-db: ## Restore دیتابیس (استفاده: make restore-db FILE=backup.sql)
 	@echo "$(GREEN)Restoring database...$(NC)"
 	docker exec -i microservices_postgres psql -U postgres < $(FILE)
+
+run-user-service:
+	@go run ./services/user/main.go
+
+run-api-gateway:
+	@go run ./api-gateway/main.go

@@ -43,7 +43,7 @@ func main() {
 	e.GET("/health", userHandler.HealthCheck)
 	// e.GET("/users", userService.getUsers)
 	// e.GET("/users/:id", userService.getUser)
-	// e.POST("/users", userService.createUser)
+	e.POST("/users", userHandler.CreateUser)
 	// e.PUT("/users/:id", userService.updateUser)
 	// e.DELETE("/users/:id", userService.deleteUser)
 
