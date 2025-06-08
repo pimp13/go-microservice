@@ -1,0 +1,254 @@
+version: "3.8"
+
+networks:
+  microservices-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: microservices_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-microservices}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-microservices}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: microservices_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.11
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Microservices
+  user-service:
+    build:
+      context: ./services/user
+      dockerfile: Dockerfile
+    container_name: microservices_user_service
+    restart: unless-stopped
+    environment:
+      - PORT=8081
+      - DATABASE_URL=host=postgres user=${POSTGRES_USER:-postgres} password=${POSTGRES_PASSWORD:-postgres} dbname=users port=5432 sslmode=disable TimeZone=Asia/Tehran
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.21
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8081/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  product-service:
+    build:
+      context: ./services/product
+      dockerfile: Dockerfile
+    container_name: microservices_product_service
+    restart: unless-stopped
+    environment:
+      - PORT=8082
+      - DATABASE_URL=host=postgres user=${POSTGRES_USER:-postgres} password=${POSTGRES_PASSWORD:-postgres} dbname=products port=5432 sslmode=disable TimeZone=Asia/Tehran
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/1
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.22
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8082/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  order-service:
+    build:
+      context: ./services/order
+      dockerfile: Dockerfile
+    container_name: microservices_order_service
+    restart: unless-stopped
+    environment:
+      - PORT=8083
+      - DATABASE_URL=host=postgres user=${POSTGRES_USER:-postgres} password=${POSTGRES_PASSWORD:-postgres} dbname=orders port=5432 sslmode=disable TimeZone=Asia/Tehran
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/2
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
+      - USER_SERVICE_URL=http://user-service:8081
+      - PRODUCT_SERVICE_URL=http://product-service:8082
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.23
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8083/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: microservices_api_gateway
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - USER_SERVICE_URL=http://user-service:8081
+      - PRODUCT_SERVICE_URL=http://product-service:8082
+      - ORDER_SERVICE_URL=http://order-service:8083
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - RATE_LIMIT=${RATE_LIMIT:-100}
+    ports:
+      - "8080:8080"
+    depends_on:
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.30
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 50s
+
+  # Monitoring Services (اختیاری)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: microservices_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.40
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: microservices_grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+    volumes:
+      - ./monitoring/grafana:/var/lib/grafana
+    networks:
+      microservices-network:
+        ipv4_address: 172.20.0.41
+    profiles:
+      - monitoring
